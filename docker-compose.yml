@@ -1,0 +1,36 @@
+# Backend de Persona Resolver.
+#
+# Ventanilla Social (RUI) solo acepta IPs colombianas: el contenedor tiene que
+# salir a internet desde Colombia. La base de datos es un PostgreSQL externo.
+#
+#   cp .env.example .env      # y completar la conexion a PostgreSQL
+#   docker compose up -d --build
+#   curl http://127.0.0.1:8099/api/health
+#
+# Con restart: unless-stopped el contenedor vuelve a levantarse cuando arranca
+# Docker.
+
+services:
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: persona-resolver-app
+    restart: unless-stopped
+
+    # Solo loopback: nada entra desde la red local. Para publicarlo, poner
+    # delante un proxy inverso o un tunel que apunte a este puerto, y no usar
+    # ese puerto para nada mas: lo que escuche ahi queda publicado.
+    ports:
+      - "127.0.0.1:${APP_PORT:-8099}:8080"
+
+    environment:
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:?SPRING_DATASOURCE_URL is required}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:?SPRING_DATASOURCE_USERNAME is required}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:?SPRING_DATASOURCE_PASSWORD is required}
+      APP_SCRAPER_TIMEOUT_MS: ${APP_SCRAPER_TIMEOUT_MS:-30000}
+      APP_SOURCES_RUI_USER_AGENT: ${APP_SOURCES_RUI_USER_AGENT:-Mozilla/5.0}
+      APP_SOURCES_RUES_USER_AGENT: ${APP_SOURCES_RUES_USER_AGENT:-Mozilla/5.0}
+      SPRING_JPA_SHOW_SQL: ${SPRING_JPA_SHOW_SQL:-false}
