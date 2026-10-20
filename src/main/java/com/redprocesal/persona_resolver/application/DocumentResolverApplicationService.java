@@ -9,6 +9,7 @@ import com.redprocesal.persona_resolver.domain.exception.DocumentNotFoundExcepti
 import com.redprocesal.persona_resolver.domain.model.DocumentQuery;
 import com.redprocesal.persona_resolver.domain.model.DocumentType;
 import com.redprocesal.persona_resolver.domain.port.CompanyDataSource;
+import com.redprocesal.persona_resolver.domain.port.ExcludedDocuments;
 import com.redprocesal.persona_resolver.domain.port.PersonDataSource;
 import com.redprocesal.persona_resolver.domain.service.DocumentValidator;
 import com.redprocesal.persona_resolver.infrastructure.adapter.persistence.DocumentPersistenceAdapter;
@@ -19,10 +20,14 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class DocumentResolverApplicationService implements ResolveDocumentUseCase {
 
+    private static final String CEDULA_NOT_FOUND = "No se encontró información para la cédula consultada.";
+    private static final String NIT_NOT_FOUND = "No se encontró información para el NIT consultado.";
+
     private final PersonDataSource personDataSource;
     private final CompanyDataSource companyDataSource;
     private final DocumentValidator documentValidator;
     private final DocumentPersistenceAdapter documentPersistenceAdapter;
+    private final ExcludedDocuments excludedDocuments;
 
     @Override
     public DocumentQueryResponse resolve(DocumentQueryRequest request) {
@@ -36,6 +41,16 @@ public class DocumentResolverApplicationService implements ResolveDocumentUseCas
 
         documentValidator.validate(query);
 
+        /*
+         * Un documento excluido responde igual que uno inexistente: no se
+         * consulta en las fuentes, no se guarda y no revela que su titular
+         * pidió la supresión.
+         */
+        if (excludedDocuments.contains(query.documentType(), query.canonicalNumber())) {
+            throw new DocumentNotFoundException(
+                    query.documentType() == DocumentType.CEDULA ? CEDULA_NOT_FOUND : NIT_NOT_FOUND);
+        }
+
         DocumentQueryResponse response;
 
         if (query.documentType() == DocumentType.CEDULA) {
@@ -46,9 +61,7 @@ public class DocumentResolverApplicationService implements ResolveDocumentUseCas
                     );
 
             if (person == null) {
-                throw new DocumentNotFoundException(
-                        "No se encontró información para la cédula consultada."
-                );
+                throw new DocumentNotFoundException(CEDULA_NOT_FOUND);
             }
 
             response = new DocumentQueryResponse(
@@ -70,9 +83,7 @@ public class DocumentResolverApplicationService implements ResolveDocumentUseCas
                     );
 
             if (company == null) {
-                throw new DocumentNotFoundException(
-                        "No se encontró información para el NIT consultado."
-                );
+                throw new DocumentNotFoundException(NIT_NOT_FOUND);
             }
 
             response = new DocumentQueryResponse(

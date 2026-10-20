@@ -63,9 +63,6 @@ class DocumentPersistenceAdapterTest {
                                 "TURBACO",
                                 null,
                                 43,
-                                "C",
-                                "C01",
-                                "Solo ingreso estimado",
                                 "13836");
 
                 DocumentQueryResponse response = new DocumentQueryResponse(
@@ -115,9 +112,6 @@ class DocumentPersistenceAdapterTest {
                                 "TURBACO",
                                 null,
                                 43,
-                                "C",
-                                "C01",
-                                "Solo ingreso estimado",
                                 "13836");
 
                 DocumentQueryResponse response = new DocumentQueryResponse(
@@ -167,9 +161,6 @@ class DocumentPersistenceAdapterTest {
                                 "TURBACO",
                                 null,
                                 44,
-                                "C",
-                                "C01",
-                                "Solo ingreso estimado",
                                 "13836");
 
                 DocumentQueryResponse response = new DocumentQueryResponse(
@@ -232,9 +223,6 @@ class DocumentPersistenceAdapterTest {
                                 "TURBACO",
                                 null,
                                 43,
-                                "C",
-                                "C01",
-                                "Solo ingreso estimado",
                                 "13836");
 
                 DocumentQueryResponse response = new DocumentQueryResponse(

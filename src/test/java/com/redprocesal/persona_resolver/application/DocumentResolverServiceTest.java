@@ -9,6 +9,7 @@ import com.redprocesal.persona_resolver.domain.exception.DocumentNotFoundExcepti
 import com.redprocesal.persona_resolver.domain.model.DocumentQuery;
 import com.redprocesal.persona_resolver.domain.model.DocumentType;
 import com.redprocesal.persona_resolver.domain.port.CompanyDataSource;
+import com.redprocesal.persona_resolver.domain.port.ExcludedDocuments;
 import com.redprocesal.persona_resolver.domain.port.PersonDataSource;
 import com.redprocesal.persona_resolver.domain.service.DocumentValidator;
 import com.redprocesal.persona_resolver.infrastructure.adapter.persistence.DocumentPersistenceAdapter;
@@ -44,6 +45,9 @@ class DocumentResolverServiceTest {
         @Mock
         private DocumentPersistenceAdapter documentPersistenceAdapter;
 
+        @Mock
+        private ExcludedDocuments excludedDocuments;
+
         @InjectMocks
         private DocumentResolverApplicationService service;
 
@@ -64,9 +68,6 @@ class DocumentResolverServiceTest {
                                 "TURBACO",
                                 null,
                                 43,
-                                "C",
-                                "C01",
-                                "Solo ingreso estimado",
                                 "13836");
 
                 doNothing()
@@ -198,5 +199,37 @@ class DocumentResolverServiceTest {
                                 () -> service.resolve(request));
 
                 verifyNoInteractions(documentPersistenceAdapter);
+        }
+
+        /**
+         * Quien pidió la supresión de sus datos no vuelve a aparecer: no se
+         * consulta la fuente, no se guarda nada y la respuesta es la misma que
+         * para un documento inexistente.
+         */
+        @Test
+        void resolve_ExcludedCedula_IsNotQueriedNorStored() {
+
+                when(excludedDocuments.contains(DocumentType.CEDULA, "12345678"))
+                                .thenReturn(true);
+
+                DocumentNotFoundException error = assertThrows(
+                                DocumentNotFoundException.class,
+                                () -> service.resolve(new DocumentQueryRequest(DocumentType.CEDULA, " 12345678 ")));
+
+                assertEquals("No se encontró información para la cédula consultada.", error.getMessage());
+                verifyNoInteractions(personDataSource, companyDataSource, documentPersistenceAdapter);
+        }
+
+        @Test
+        void resolve_ExcludedNit_MatchesWithoutDotsNorCheckDigit() {
+
+                when(excludedDocuments.contains(DocumentType.NIT, "891408584"))
+                                .thenReturn(true);
+
+                assertThrows(
+                                DocumentNotFoundException.class,
+                                () -> service.resolve(new DocumentQueryRequest(DocumentType.NIT, "891.408.584-5")));
+
+                verifyNoInteractions(companyDataSource, documentPersistenceAdapter);
         }
 }

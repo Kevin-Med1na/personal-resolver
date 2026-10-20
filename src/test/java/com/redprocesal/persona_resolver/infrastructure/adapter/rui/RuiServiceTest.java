@@ -35,10 +35,25 @@ class RuiServiceTest {
         assertEquals("TURBACO", person.city());
         assertEquals("BOLÍVAR", person.state());
         assertEquals(20, person.age());
-        assertEquals("C", person.ruiGroup());
-        assertEquals("C01", person.ruiLevel());
-        assertEquals("Solo ingreso estimado", person.incomeGroup());
         assertEquals("13836", person.municipalityCode());
+    }
+
+    /**
+     * La fuente entrega la clasificación socioeconómica de la persona. No debe
+     * salir del servicio: ni en la respuesta ni en el historial, que se
+     * serializa a partir del mismo registro.
+     */
+    @Test
+    void shouldNotKeepSocioeconomicClassification() {
+        String json = "{\"ok\":true,\"nombre\":\"JUAN CARLOS PEREZ GOMEZ\","
+                + "\"grupoIngresos\":\"Solo ingreso estimado\",\"grupRui\":\"C\",\"nivelRui\":\"C01\"}";
+
+        PersonBasicData person = RuiService.parseRuiResponse(json, "9876543210");
+        String serialized = new tools.jackson.databind.ObjectMapper().writeValueAsString(person);
+
+        assertFalse(serialized.contains("Solo ingreso estimado"), serialized);
+        assertFalse(serialized.contains("C01"), serialized);
+        assertFalse(serialized.matches("(?i).*(rui|income|ingreso).*"), serialized);
     }
 
     @Test

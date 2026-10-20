@@ -326,9 +326,8 @@ public class RuiService implements PersonDataSource {
                     text(root, "municipio"),
                     null,
                     integer(root, "edad"),
-                    text(root, "grupRui"),
-                    text(root, "nivelRui"),
-                    text(root, "grupoIngresos"),
+                    // grupRui, nivelRui y grupoIngresos se ignoran a propósito:
+                    // son la clasificación socioeconómica de la persona.
                     text(root, "codMpio"));
         } catch (Exception e) {
             throw new ExternalSourceException(

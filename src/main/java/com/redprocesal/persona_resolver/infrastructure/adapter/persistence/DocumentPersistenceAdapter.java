@@ -168,7 +168,12 @@ public class DocumentPersistenceAdapter {
         );
     }
 
-    private String buildHistoricalJson(
+    /**
+     * JSON con el que se guarda y se compara una respuesta. Visible en el
+     * paquete para que {@link HistoryCleanup} produzca exactamente lo mismo
+     * que una consulta nueva.
+     */
+    String buildHistoricalJson(
             DocumentQueryResponse response) {
 
         try {
@@ -245,7 +250,7 @@ public class DocumentPersistenceAdapter {
         empresaRepository.save(empresa);
     }
 
-    private String calculateHash(String input) {
+    String calculateHash(String input) {
 
         try {
             MessageDigest digest =

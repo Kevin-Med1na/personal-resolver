@@ -113,9 +113,6 @@ Respuesta `200` para una cédula:
     "city": "CARTAGENA DE INDIAS",
     "address": null,
     "age": 28,
-    "ruiGroup": "D",
-    "ruiLevel": "D09",
-    "incomeGroup": "Ingreso observado y estimado",
     "municipalityCode": "13001"
   },
   "message": "Consulta realizada con éxito",
@@ -124,6 +121,10 @@ Respuesta `200` para una cédula:
   "previousConsultDate": "2026-10-19T14:02:11Z"
 }
 ```
+
+La fuente también entrega la clasificación socioeconómica de la persona (grupo y
+nivel RUI, grupo de ingresos). El servicio no la lee, no la guarda y no la
+devuelve.
 
 Para un NIT, `source` es `RUES`, `entityType` es `COMPANY` y los datos van en
 `company` (`companyName`, `businessType`, `state`, `city`). Los campos `null` del
@@ -151,7 +152,8 @@ Todos responden con el mismo formato:
 | HTTP | Cuándo |
 |---|---|
 | `400` | Documento inválido o cuerpo mal formado. |
-| `404` | La fuente respondió y no hay información para el documento. |
+| `404` | La fuente respondió y no hay información para el documento, o el documento está excluido (ver [Solicitudes de supresión](#solicitudes-de-supresión)). |
+| `429` | Se superó el límite de consultas (ver [Límite de consultas](#límite-de-consultas)). Trae `Retry-After` en segundos. |
 | `502` | La fuente respondió algo inesperado (cambio de contrato, error HTTP). |
 | `503` | La fuente no respondió a tiempo. El resultado es inconcluyente: se puede reintentar. |
 
@@ -213,6 +215,9 @@ Respuesta de la fuente:
 }
 ```
 
+Se usan `nombre`, `sexo`, `edad`, `departamento`, `municipio` y `codMpio`.
+`grupRui`, `nivelRui` y `grupoIngresos` se ignoran a propósito.
+
 ## RUES — Empresas
 
 Se usa el endpoint JSON del portal RUES, con una sesión HTTP independiente por
@@ -251,6 +256,46 @@ como `OffsetDateTime` en UTC, para que el cliente las convierta a su hora local.
 
 El pool de conexiones se vacía tras 2 minutos sin uso (`minimum-idle=0`), para que
 un PostgreSQL serverless pueda apagar su compute entre consultas.
+
+**Limpieza del historial.** Las versiones anteriores guardaban la clasificación
+socioeconómica dentro de `raw_json_response`. Al arrancar, `HistoryCleanup` la
+quita de los registros que aún la tienen y recalcula su hash con el mismo método
+que una consulta nueva, para que el conteo de cada documento siga sumando. Es
+idempotente y cada registro se guarda por separado: uno defectuoso no impide
+arrancar. En el log aparece una línea `Historial: se quitó la clasificación
+socioeconómica de N de M registros.` la primera vez.
+
+**Documentos excluidos.** `documento_excluido` guarda los documentos cuyos
+titulares pidieron la supresión. Un documento excluido no se consulta en las
+fuentes ni se guarda, y responde igual que uno inexistente (`404`).
+
+## Solicitudes de supresión
+
+Para atender a un titular que pide borrar sus datos, en la base de datos:
+
+```sql
+BEGIN;
+INSERT INTO documento_excluido (document_type, document_number, excluded_at)
+VALUES ('CEDULA', '12345678', now() AT TIME ZONE 'UTC')
+ON CONFLICT DO NOTHING;
+DELETE FROM consulta_documento WHERE document_type = 'CEDULA' AND document_number = '12345678';
+DELETE FROM persona            WHERE document_type = 'CEDULA' AND document_number = '12345678';
+COMMIT;
+```
+
+Para un NIT: `document_type = 'NIT'`, el número sin puntos ni dígito de
+verificación, y la tabla `empresa` en lugar de `persona`. La tabla
+`documento_excluido` la crea Hibernate al arrancar.
+
+## Límite de consultas
+
+`/api/lookup` tiene un límite por cliente (por minuto y por día) y uno total (por
+minuto). Al superarlo responde `429` con `Retry-After`. El cliente se identifica
+por su IP, que se toma de `x-vercel-forwarded-for`, `x-real-ip` o
+`x-forwarded-for` y se usa solo en memoria para contar: no se guarda ni se
+registra. Al recibir la primera consulta, el log indica de qué cabecera la tomó
+(sin la IP), para comprobar que detrás del proxy se distinguen los clientes. Si
+dice "de la conexión", todos los clientes cuentan como uno.
 
 ---
 
@@ -291,6 +336,9 @@ Toda la configuración entra por variables de entorno (`.env`, ver `.env.example
 | `APP_PORT` | Puerto del host en `127.0.0.1` donde se publica el contenedor (por defecto `8099`). |
 | `APP_SCRAPER_TIMEOUT_MS` | Timeout de las fuentes externas (por defecto `30000`). |
 | `APP_SOURCES_RUI_USER_AGENT` / `APP_SOURCES_RUES_USER_AGENT` | User-Agent de cada fuente. |
+| `APP_RATE_LIMIT_PER_CLIENT_PER_MINUTE` | Consultas por cliente por minuto (por defecto `10`; `0` desactiva). |
+| `APP_RATE_LIMIT_PER_CLIENT_PER_DAY` | Consultas por cliente por día (por defecto `200`; `0` desactiva). |
+| `APP_RATE_LIMIT_GLOBAL_PER_MINUTE` | Consultas en total por minuto (por defecto `60`; `0` desactiva). |
 
 ---
 
@@ -345,7 +393,10 @@ Las consultas contienen documentos de identificación.
 - No almacenar cookies de sesión, tokens antiforgery ni nonces.
 - Secretos solo por variables de entorno; `.env` no se versiona.
 - `/api/lookup` no tiene autenticación: si se publica, cualquiera puede consultar.
-  Para restringirlo hay que hacerlo en el backend o en el proxy.
+  El límite de consultas frena la consulta masiva, no la impide del todo; para
+  restringir el acceso hay que hacerlo en el backend o en el proxy.
+- Solo se devuelve y se guarda lo que muestra el frontend; la clasificación
+  socioeconómica que entrega RUI se descarta.
 
 ---
 
@@ -357,6 +408,10 @@ Las consultas contienen documentos de identificación.
   navegador.
 - **RUI ambiguo:** `ok:false` significa tanto "no existe" como "este nodo no
   resuelve", así que una cédula inexistente cuesta los 8 intentos antes del `404`.
+- **Datos personales de terceros:** el servicio muestra y guarda datos de las
+  personas consultadas, lo que lo sujeta a la Ley 1581 de 2012 de protección de
+  datos. La política de tratamiento y los términos de uso se publican en el
+  frontend (`/privacidad` y `/terminos`).
 
 ---
 
