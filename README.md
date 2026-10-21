@@ -340,10 +340,14 @@ powershell -ExecutionPolicy Bypass -File scripts\verificar-servicio.ps1 -Sitio h
 | 8 | Con `-Sitio`, la cadena completa: sitio → proxy → Funnel → contenedor |
 
 Con `-Reparar` abre Docker Desktop, levanta el contenedor y vuelve a publicar el
-Funnel; no reconstruye la imagen ni toca la base de datos. Con `-InstalarTarea`
-registra, sin permisos de administrador, una tarea programada que lo ejecuta con
-`-Reparar` al iniciar sesión y cada día a las 6:45. El resultado de la última
-ejecución queda en `%LOCALAPPDATA%\PersonalResolver\verificar-servicio.log`.
+Funnel; no reconstruye la imagen ni toca la base de datos. Si el Funnel todavía
+no responde desde internet (puede tardar unos minutos después de encender el
+equipo), lo espera hasta 10 minutos. Cada espera queda anotada con lo que tardó.
+
+Con `-InstalarTarea` registra, sin permisos de administrador, una tarea
+programada que lo ejecuta con `-Reparar` al iniciar sesión y cada día a las 6:45.
+Cada ejecución se agrega a `%LOCALAPPDATA%\PersonalResolver\verificar-servicio.log`,
+así que se puede ver qué tramo se demoró cada mañana.
 
 Ajustes que se hacen una sola vez:
 

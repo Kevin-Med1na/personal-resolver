@@ -23,10 +23,13 @@
   Funnel. No toca la base de datos ni reconstruye la imagen: para actualizar
   sigue siendo git pull y docker compose up -d --build.
 
+  Cuando espera algo (Docker, el backend, Tailscale o que el Funnel responda
+  desde internet), dice cuanto tardo.
+
   Con -InstalarTarea registra una tarea programada que lo ejecuta con -Reparar
   al iniciar sesion en Windows y cada dia a las 6:45 (si a esa hora la PC
   estaba apagada o suspendida, en cuanto vuelva). No necesita permisos de
-  administrador. El resultado de la ultima ejecucion queda en
+  administrador. Cada ejecucion se agrega a
   %LOCALAPPDATA%\PersonalResolver\verificar-servicio.log.
 
 .EXAMPLE
@@ -66,8 +69,11 @@ if (Test-Path $EnvFile) {
 if ($Registro) {
     $carpeta = Join-Path $env:LOCALAPPDATA 'PersonalResolver'
     New-Item -ItemType Directory -Force -Path $carpeta | Out-Null
-    # Sin -Append: el archivo guarda solo la ultima ejecucion y no crece.
-    Start-Transcript -Path (Join-Path $carpeta 'verificar-servicio.log') -Force | Out-Null
+    # Se acumulan las ejecuciones para poder comparar una manana con otra;
+    # pasado medio mega se empieza de nuevo.
+    $log = Join-Path $carpeta 'verificar-servicio.log'
+    if ((Test-Path $log) -and (Get-Item $log).Length -gt 512KB) { Remove-Item $log }
+    Start-Transcript -Path $log -Append | Out-Null
 }
 
 $script:Fallos = 0
@@ -155,13 +161,33 @@ function Format-Sample([string]$Cuerpo) {
     return $muestra
 }
 
-function Wait-Until([scriptblock]$Condicion, [int]$Segundos) {
+function Wait-Until([scriptblock]$Condicion, [int]$Segundos, [int]$Cada = 5) {
     $limite = (Get-Date).AddSeconds($Segundos)
     while ((Get-Date) -lt $limite) {
         if (& $Condicion) { return $true }
-        Start-Sleep -Seconds 5
+        Start-Sleep -Seconds $Cada
     }
     return [bool](& $Condicion)
+}
+
+function Format-Span([TimeSpan]$Duracion) {
+    $total = [int][Math]::Round($Duracion.TotalSeconds)
+    if ($total -lt 60) { return "$total s" }
+    $minutos = [Math]::Floor($total / 60)
+    $resto = $total % 60
+    if ($resto -eq 0) { return "$minutos min" }
+    return "$minutos min $resto s"
+}
+
+# Espera como Wait-Until y dice cuanto tardo: el registro de la tarea muestra
+# asi que tramo se demora al encender la PC.
+function Wait-Ready([string]$Que, [scriptblock]$Condicion, [int]$Segundos, [int]$Cada = 5) {
+    Write-Host "  Esperando $Que (hasta $(Format-Span ([TimeSpan]::FromSeconds($Segundos))))..."
+    $desde = Get-Date
+    $listo = Wait-Until $Condicion $Segundos $Cada
+    $tardo = Format-Span ((Get-Date) - $desde)
+    if ($listo) { Write-Host "  Listo tras $tardo." } else { Write-Host "  Tras $tardo, sigue sin estar listo." }
+    return $listo
 }
 
 function Test-Docker {
@@ -212,6 +238,24 @@ function Resolve-PublicName([string]$Nombre) {
     return ''
 }
 
+# Una prueba del Funnel desde internet. Desde esta PC el nombre se resuelve a
+# la IP del tailnet y la prueba no pasaria por el Funnel: se resuelve con DNS
+# publico y se entra por esa direccion, que es el camino que sigue Vercel.
+# Estado: ok, sin-dns (no hay direccion publica), sin-respuesta o sin-consulta
+# (no se pudo consultar el DNS publico).
+function Test-FunnelPublic {
+    $ip = Resolve-PublicName $dnsName
+    # 100.64.0.0/10 es el rango del tailnet, no una direccion publica.
+    if ($ip -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { $ip = '' }
+    if ($null -eq $ip) { return [pscustomobject]@{ Estado = 'sin-consulta'; Respuesta = $null } }
+    if ($ip -eq '') { return [pscustomobject]@{ Estado = 'sin-dns'; Respuesta = $null } }
+
+    $r = Get-Url "https://$dnsName/api/health" @('--resolve', "${dnsName}:443:$ip")
+    $estado = 'sin-respuesta'
+    if (Test-Up $r.Body) { $estado = 'ok' }
+    [pscustomobject]@{ Estado = $estado; Respuesta = $r }
+}
+
 # Minutos sin uso tras los que la PC se suspende conectada a la corriente;
 # 0 es nunca y $null que no se pudo saber.
 function Get-SleepMinutes {
@@ -241,14 +285,14 @@ if ($InstalarTarea) {
         $alIniciar.Delay = 'PT1M'
         $cadaDia = New-ScheduledTaskTrigger -Daily -At ([datetime]::Today.AddHours(6).AddMinutes(45))
         $ajustes = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+            -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 
         Register-ScheduledTask -TaskName $NombreTarea -Action $accion -Trigger @($alIniciar, $cadaDia) `
             -Settings $ajustes -Force `
             -Description 'Comprueba y repara Docker, el contenedor y el Funnel de Personal Resolver.' | Out-Null
 
         Ok "Tarea '$NombreTarea' registrada: corre 1 minuto despues de iniciar sesion y cada dia a las 6:45."
-        Write-Host "          Registro de la ultima ejecucion: $env:LOCALAPPDATA\PersonalResolver\verificar-servicio.log"
+        Write-Host "          Registro de cada ejecucion: $env:LOCALAPPDATA\PersonalResolver\verificar-servicio.log"
         Write-Host ("          Para quitarla: Unregister-ScheduledTask -TaskName '{0}'" -f $NombreTarea)
     } catch {
         Falla "No se pudo registrar la tarea: $($_.Exception.Message)" `
@@ -272,8 +316,7 @@ if (-not $dockerOk -and $Reparar) {
         Write-Host '  Abriendo Docker Desktop...'
         Start-Process $exe
     }
-    Write-Host '  Esperando a Docker (hasta 3 minutos)...'
-    $dockerOk = Wait-Until { Test-Docker } 180
+    $dockerOk = Wait-Ready 'a Docker' { Test-Docker } 180
 }
 
 if ($dockerOk) {
@@ -318,8 +361,7 @@ $urlLocal = "http://127.0.0.1:$Puerto/api/health"
 $localOk = Test-Up (Get-Url $urlLocal).Body
 if (-not $localOk -and $estado -match '^Up') {
     # Recien levantado tarda unos segundos en responder.
-    Write-Host '  Esperando a que responda (hasta 90 s)...'
-    $localOk = Wait-Until { Test-Up (Get-Url $urlLocal).Body } 90
+    $localOk = Wait-Ready 'a que responda' { Test-Up (Get-Url $urlLocal).Body } 90
 }
 
 if ($localOk) {
@@ -354,8 +396,7 @@ Paso '5. Tailscale'
 $ts = Get-TailscaleStatus
 if ((-not $ts -or $ts.BackendState -ne 'Running') -and $Reparar) {
     # Al iniciar sesion tarda unos segundos en conectar.
-    Write-Host '  Esperando a que Tailscale conecte (hasta 1 minuto)...'
-    $null = Wait-Until { $s = Get-TailscaleStatus; $s -and $s.BackendState -eq 'Running' } 60
+    $null = Wait-Ready 'a que Tailscale conecte' { $s = Get-TailscaleStatus; $s -and $s.BackendState -eq 'Running' } 60
     $ts = Get-TailscaleStatus
 }
 
@@ -412,33 +453,43 @@ if ($tsOk) {
 }
 
 # 7. Funnel desde internet ----------------------------------------------------
-# Desde esta PC el nombre se resuelve a la IP del tailnet y la prueba no pasaria
-# por el Funnel. Se resuelve con DNS publico y se entra por esa direccion, que es
-# el camino que sigue Vercel.
 Paso '7. Funnel desde internet'
 $funnelPublicoOk = $false
 $funnelPublicoFalla = $false
 if ($funnelOk -and $localOk) {
-    $ip = Resolve-PublicName $dnsName
-    # 100.64.0.0/10 es el rango del tailnet, no una direccion publica.
-    if ($ip -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { $ip = '' }
+    $prueba = Test-FunnelPublic
+    if ($Reparar -and $prueba.Estado -in @('sin-dns', 'sin-respuesta')) {
+        # Al encender la PC el Funnel puede tardar unos minutos en recibir
+        # trafico de internet: se espera, y queda anotado cuanto tardo.
+        $motivo = 'sin direccion publica'
+        if ($prueba.Estado -eq 'sin-respuesta') {
+            $motivo = ("HTTP $($prueba.Respuesta.Code) " + (Format-Sample $prueba.Respuesta.Body)).Trim()
+        }
+        Write-Host "  Todavia no responde desde internet ($motivo)."
+        $null = Wait-Ready 'a que responda desde internet' {
+            $script:prueba = Test-FunnelPublic
+            $script:prueba.Estado -eq 'ok'
+        } 600 15
+    }
 
-    if ($null -eq $ip) {
-        Aviso 'No se pudo consultar el DNS publico (dns.google); no se probo el Funnel desde internet.'
-    } elseif ($ip -eq '') {
-        $funnelPublicoFalla = $true
-        Falla "$dnsName no tiene direccion publica: el Funnel no se ve desde internet." `
-            'Si lo acabas de publicar, espera 10 minutos (lo que tarda el DNS) y vuelve a probar.'
-    } else {
-        $r = Get-Url "https://$dnsName/api/health" @('--resolve', "${dnsName}:443:$ip")
-        if (Test-Up $r.Body) {
+    switch ($prueba.Estado) {
+        'ok' {
             $funnelPublicoOk = $true
             Ok "https://$dnsName responde desde internet."
-        } else {
+        }
+        'sin-consulta' {
+            Aviso 'No se pudo consultar el DNS publico (dns.google); no se probo el Funnel desde internet.'
+        }
+        'sin-dns' {
             $funnelPublicoFalla = $true
-            Falla "https://$dnsName no responde desde internet (HTTP $($r.Code))." `
+            Falla "$dnsName no tiene direccion publica: el Funnel no se ve desde internet." `
+                'Si lo acabas de publicar, espera 10 minutos (lo que tarda el DNS) y vuelve a probar.'
+        }
+        default {
+            $funnelPublicoFalla = $true
+            Falla "https://$dnsName no responde desde internet (HTTP $($prueba.Respuesta.Code))." `
                 "Vuelve a publicarlo: tailscale funnel --https=443 off y luego tailscale funnel --bg $Puerto"
-            $muestra = Format-Sample $r.Body
+            $muestra = Format-Sample $prueba.Respuesta.Body
             if ($muestra) { Write-Host "          Respuesta: $muestra" }
         }
     }
