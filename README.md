@@ -322,6 +322,40 @@ Si se publica el puerto con un proxy o un túnel, ese puerto debe ser solo de es
 backend: con el contenedor detenido, cualquier otro proceso que escuche en él
 quedaría publicado en su lugar.
 
+## En un equipo con Windows y Tailscale Funnel
+
+Para un equipo que se apaga por la noche, `scripts/verificar-servicio.ps1` revisa
+cada tramo de la cadena y dice cuál falla y cómo arreglarlo:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\verificar-servicio.ps1 -Sitio https://<tu-proyecto>.vercel.app
+```
+
+| Paso | Qué comprueba |
+|---|---|
+| 1–3 | Docker, el contenedor y `GET /api/health` en `127.0.0.1` |
+| 4 | Que ningún otro proceso escuche en el puerto fuera de `127.0.0.1` |
+| 5–6 | Que Tailscale esté conectado (y cuándo vence su clave) y que el Funnel publique el puerto |
+| 7 | Que el Funnel responda desde internet, por la misma ruta que usa el proxy |
+| 8 | Con `-Sitio`, la cadena completa: sitio → proxy → Funnel → contenedor |
+
+Con `-Reparar` abre Docker Desktop, levanta el contenedor y vuelve a publicar el
+Funnel; no reconstruye la imagen ni toca la base de datos. Con `-InstalarTarea`
+registra, sin permisos de administrador, una tarea programada que lo ejecuta con
+`-Reparar` al iniciar sesión y cada día a las 6:45. El resultado de la última
+ejecución queda en `%LOCALAPPDATA%\PersonalResolver\verificar-servicio.log`.
+
+Ajustes que se hacen una sola vez:
+
+- **Docker Desktop:** *Settings → General → Start Docker Desktop when you sign in
+  to your computer*.
+- **Tailscale:** *Run unattended* (clic derecho en el ícono de la bandeja →
+  *Preferences*), para que conecte sin esperar al inicio de sesión. En la consola
+  de administración, *Disable key expiry* para el equipo: si no, la clave vence a
+  los 180 días y el Funnel deja de responder.
+- **Windows:** que no se suspenda mientras está conectado a la corriente; en
+  suspensión el servicio no responde.
+
 ---
 
 # Configuración
@@ -369,6 +403,9 @@ curl -X POST http://127.0.0.1:8099/api/lookup \
 ---
 
 # Diagnóstico
+
+Si el servicio no responde, `scripts/verificar-servicio.ps1` dice en qué tramo se
+corta la cadena (ver [En un equipo con Windows y Tailscale Funnel](#en-un-equipo-con-windows-y-tailscale-funnel)).
 
 Si las cédulas devuelven `404` en todos los casos, RUI está respondiendo
 `ok:false` y el backend descarta ese cuerpo. `scripts/diagnostico-rui.ps1` repite
